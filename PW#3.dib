@@ -31,11 +31,12 @@
 2. Основная функция должна дождаться завершения всех потоков, которые вычисляют значение на отрезках, прежде чем возвратить результат. Для этого удобнее всего использовать Примитив синхронизации Барьер](https://learn.microsoft.com/ru-ru/dotnet/standard/threading/barrier).
 
 #!csharp
+
 using System;
 using System.Threading;
-#!csharp
 
 #!csharp
+
 class DefiniteIntegral
 {
     public static double Solve(double a, double b, Func<double, double> function, double step, int threadsNumber)
@@ -49,6 +50,7 @@ class DefiniteIntegral
         return res * step;
     }
 }
+
 #!csharp
 
 #r "nuget: xunit, 2.8.1"
@@ -63,3 +65,80 @@ Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
 
 Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+
+#!csharp
+
+#r "nuget: xunit, 2.8.1"
+
+using Xunit;
+
+double optimum_step = 10;
+double[] steps = {1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6};
+foreach(double step in steps){ 
+    try {
+        Assert.Equal(0, DefiniteIntegral.Solve(-100, 100, SIN, step, 12), 1e-4);
+        Console.WriteLine(true);
+        if (optimum_step == 10) {optimum_step = step;}
+    }
+    catch (Xunit.Sdk.EqualException) {Console.WriteLine(false);}
+}
+$"оптимальный шаг {optimum_step}"
+
+#!csharp
+
+double double_time(TimeSpan time){
+    return Convert.ToDouble("0." + Convert.ToString(time).Split(".", StringSplitOptions.RemoveEmptyEntries)[1]);
+}
+
+#!csharp
+
+double[] threads = Enumerable.Range(1, 10).Select(x => x * 1.0).ToArray();
+double[] solvings = Enumerable.Range(1, 10).Select(x => 0.0).ToArray();
+for (int j = 0; j < 10; j++){for(int i = 1; i < 11; i++){
+    var time = System.Diagnostics.Stopwatch.StartNew();
+    DefiniteIntegral.Solve(-100, 100, SIN, optimum_step, i);
+    time.Stop();
+    solvings[i - 1] += double_time(time.Elapsed) / 11;
+}}
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.*"
+
+#!csharp
+
+using Microsoft.DotNet.Interactive.Formatting;
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(solvings, threads);
+plt
+
+#!csharp
+
+double optimum_time = solvings.Min();
+double optimum_thread = threads[Array.IndexOf(solvings, solvings.Min())];
+$"Оптимальное время = {optimum_time}, потоков {optimum_thread}"
+
+#!csharp
+
+int b = 100; int a = -100; double dx = 1e-4; double time_one = 0; 
+
+for(int i = 0; i < 10; i++){
+    var time = System.Diagnostics.Stopwatch.StartNew();
+    var sq = dx * (Enumerable.Range(1, Convert.ToInt32((b - a) / dx)).Select(x => Math.Sin(a + x * dx)).Sum() + (Math.Sin(a) + Math.Sin(b)) / 2);
+    time.Stop();
+    time_one += double_time(time1.Elapsed) / 11;
+}
+
+double persents = Math.Abs(optimum_time / time_one) * 100;
+persents
+
+#!markdown
+
+# Summary
+
+#!csharp
+
+$"размер шага\t{optimum_step}\nоптимальное количество потоков\t{optimum_thread}\n" +
+$"время выполнения с потоками\t{optimum_time}\nвремя выполнения одним потоком\t{time_one}\nразница в процентах\t{persents}"
