@@ -10,7 +10,7 @@
 
 **Результаты:** После выполнения работы Вы сможете:
 1. Назвать оптимальную коллекцию для обработки большого количества сообщений.
-2. Изучите примтив синхронизации Условная переманная.
+2. Изучите примтив синхронизации Условная переменная.
 
 
 **Материалы для самостоятельного изучения**.
@@ -19,28 +19,143 @@
 3. [Одна из реализаций условных переменных на .Net](https://learn.microsoft.com/ru-ru/dotnet/api/system.threading.manualresetevent?view=net-8.0)
 
 ## Задание.
-Исслдеовать производительность BlockingCollection и ConcurrentQueue в сравнении с непотокоабезопасной очередью.
+Исследовать производительность BlockingCollection и ConcurrentQueue в сравнении с непотоко-небезопасной очередью.
 
 Для каждой потоко-безопасной очереди необходимо реализовать 2 потока: один записывает объект в очередь, а другой - читает объект из очереди.
 Для непотокобезопасной очереди реализовать два цикла - записи миллиона объектов в очередь и чтение миллиона объектов из очереди.
 
 Необходимо определить два промежутка времени:
 - время за которое поток или цикл обработает миллион объектов
-- время, необходимое на запись и чтение миллиона объектов из очреди.
+- время, необходимое на запись и чтение миллиона объектов из очереди.
 
 Сделать десять замеров по каждой коллекции. Все замеры показать на графике.
 
-Записать в ноутбуке вывод - какая и потоко-безопасных коллекций эффективнее. И выразить в процентах - скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очредью.
+Записать в ноутбуке вывод - какая из потоко-безопасных коллекций эффективнее. И выразить в процентах - скорость самой быстрой поток-безопасной коллекции по сравнению с обычной очредью.
 
 **Указание**.
 1. Необходимо исключить из замеров время, необходимое для запуска и остановки потоков, то есть посчитать чистое время, необходимое для обработки объектов.
 Для этого следует использовать условные события, которые позволят убедиться, что оба потока запустились и готовы читать и писать объекты и только потом запускать таймер.
 2. Для итогового вывода сравнивать усредненные значения.
 
-#!markdown
+#!csharp
 
-// здесь писать код
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
+
+
+static void Add_object(BlockingCollection<object> bc) 
+{
+    Monitor.Enter(bc);
+    if (add_obj < Math.Pow(10, 6)){
+    bc.Add(new object());
+    Interlocked.Increment(ref add_obj);}
+    if ((add_obj == Math.Pow(10, 6)) && (bc.Count() == 0)) { bc.CompleteAdding();}
+    Monitor.Exit(bc);
+}
+static void Take_object(BlockingCollection<object> bc){
+    Monitor.Enter(bc);
+    if (bc.Count() >= 1){
+        bc.Take();
+    }
+    Monitor.Exit(bc);
+}
+
+static int add_obj = 0; 
+long[] times_bc = new long[10];
+BlockingCollection<object> blockingCollection; 
+Thread thread_add, thread_take;
+AutoResetEvent[] reset_events; System.Diagnostics.Stopwatch stopwatch;
+
+
+for (int i = 0; i < 10; i++){
+add_obj = 0;
+blockingCollection = new BlockingCollection<object>();
+reset_events = new AutoResetEvent[]{new AutoResetEvent(false), new AutoResetEvent(false)};
+
+thread_add = new Thread(() => { while (!blockingCollection.IsAddingCompleted) { Add_object(blockingCollection);} reset_events[0].Set(); });
+thread_take = new Thread(() => { while (!blockingCollection.IsAddingCompleted) { Take_object(blockingCollection);} reset_events[1].Set(); });
+
+stopwatch = System.Diagnostics.Stopwatch.StartNew();
+thread_add.Start(); thread_take.Start();
+WaitHandle.WaitAll(new WaitHandle[] { reset_events[0], reset_events[1] });
+
+stopwatch.Stop();
+times_bc[i] = stopwatch.ElapsedTicks;
+}
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.*"
+using Microsoft.DotNet.Interactive.Formatting;
+double[] threads = Enumerable.Range(1, 10).Select(x => x * 1.0).ToArray();
+Formatter.Register(typeof(ScottPlot.Plot), (p, w) => 
+    w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), HtmlFormatter.MimeType);
+ScottPlot.Plot plt = new();
+plt.Add.Scatter(threads, times_bc);
+plt
+
+#!csharp
+
+long[] times_cq = new long[10]; ConcurrentQueue<object> concurrentQueue = new ConcurrentQueue<object>();
+static object obj = new object();
+
+for (int i = 0; i < 10; i++){
+add_obj = 0;
+reset_events = new AutoResetEvent[]{new AutoResetEvent(false), new AutoResetEvent(false)};
+
+thread_add = new Thread(() => { while (add_obj <  Math.Pow(10, 6)) { 
+    concurrentQueue.Enqueue(new object()); Interlocked.Increment(ref add_obj); } reset_events[0].Set(); });
+thread_take = new Thread(() => { while (!(add_obj == Math.Pow(10, 6)) || !(concurrentQueue.Count() == 0)) { 
+    concurrentQueue.TryDequeue(out obj); } reset_events[1].Set(); });
+
+stopwatch = System.Diagnostics.Stopwatch.StartNew();
+thread_add.Start(); thread_take.Start(); 
+
+WaitHandle.WaitAll(new WaitHandle[] { reset_events[0], reset_events[1] });
+
+stopwatch.Stop();
+times_cq[i] = stopwatch.ElapsedTicks;
+}
+
+#!csharp
+
+plt = new();
+plt.Add.Scatter(threads, times_cq);
+plt
+
+#!csharp
+
+long[] times_q = new long[10]; Queue<object> queue = new Queue<object>();
+static object obj = new object();
+
+for (int i = 0; i < 10; i++){
+add_obj = 0;
+stopwatch = System.Diagnostics.Stopwatch.StartNew();
+for (int j = 0; j < Math.Pow(10, 6); j++){ queue.Enqueue(new object()); }
+for (int j = 0; j < Math.Pow(10, 6); j++){ queue.Dequeue(); }
+stopwatch.Stop();
+times_q[i] = stopwatch.ElapsedTicks;
+}
+times_q.Sum()/10
+
+#!csharp
+
+plt = new();
+plt.Add.Scatter(threads, times_q);
+plt
 
 #!markdown
 
 ## Вывод
+
+#!markdown
+
+Самой быстрой потоко-безопасной коллекций является ConcurredQueue и оптимальна для обработки большого количества данных, в одном или в двух случиях из десяти скорость этой коллекции совпадает со средней скоростью Queue, но в среднем скорость ниже.
+
+#!csharp
+
+$"Лучшая сердняя скорость потоко-безопастной коллеции в тиках {times_cq.Sum() / 10} - скорость ConcurrentQueue\n" +
+$"Лучшая средняя скорость из коллекций в тиках {times_q.Sum() / 10} - скорость Queue \n" + 
+$"Разница в процентах {100.0 * times_q.Sum() / times_cq.Sum() - 100}"
