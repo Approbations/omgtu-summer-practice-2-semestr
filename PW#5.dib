@@ -61,22 +61,21 @@ var queue1 = new BlockingCollection<Message>(2); //очередь первого
 var queue2 = new BlockingCollection<Message>(2); //очередь второго потока
 
 // Здесь писать решение
-Message local_item; static var Lock = new object();
 queue1.Add(new Message());
-Thread thread1 = new Thread(() => complete(queue1, queue2)); thread1.Start();
-Thread thread2 = new Thread(() => complete(queue2, queue1)); thread2.Start();
+int messages_1, messages_2 = 0;
+
+Thread thread1 = new Thread(() => {while (!queue1.IsAddingCompleted) 
+{if (queue1.Count() < 1 || queue2.Count() != 0) {continue;} 
+Message item = queue1.Take(); item.Handle(); messages_1++; 
+if (messages_1 == 100) {queue1.CompleteAdding();} queue2.Add(new Message());}});  
+
+Thread thread2 = new Thread(() => {while (!queue2.IsAddingCompleted) 
+{if (queue2.Count() < 1 || queue1.Count() != 0) {continue;} 
+Message item = queue2.Take(); item.Handle(); messages_2++; 
+if (queue1.IsAddingCompleted) {queue2.CompleteAdding(); continue;} queue1.Add(new Message());}}); 
+
+thread1.Start(); thread2.Start();
 thread1.Join(); thread2.Join();
-
-queue1.TryTake(out local_item);
-queue2.TryTake(out local_item);
-
-static void complete(BlockingCollection<Message> q1, BlockingCollection<Message> q2){
-    for(int i = 0; i < 100;i++){
-    Message item = q1.Take();
-    item.Handle();
-    q2.Add(new Message());
-    }
-}
 
 #!csharp
 
