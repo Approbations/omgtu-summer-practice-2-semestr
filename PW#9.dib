@@ -24,9 +24,10 @@ interface ICommand
 {
     void Execute();
 }
-
-
-public class TestCommand(int id) : ICommand
+interface ILongCommand: ICommand{
+    bool IsDone();
+}
+public class TestCommand(int id) : ILongCommand
 {
     int counter = 0;
 
@@ -34,8 +35,183 @@ public class TestCommand(int id) : ICommand
     {
         Console.WriteLine($"Поток {id} вызов {++counter}");
     }
+    public bool IsDone(){
+        return counter == 3 ? true : false;
+    }
 }
 
 #!markdown
 
 Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+class LongCommand: ILongCommand
+{
+    public int remain_use;
+    public bool Done = false;
+    public LongCommand(int use){
+        this.remain_use = use;
+    }
+    public void Execute(){
+        Console.WriteLine("long command remain: " + remain_use);
+        this.remain_use--;
+        Done = this.remain_use == 0 ? true : false;
+    }
+    public bool IsDone(){
+        return Done;
+    }
+}
+
+#!csharp
+
+class Scheduler: IScheduler
+{
+    protected ConcurrentQueue<ICommand> queue = new ConcurrentQueue<ICommand>(); 
+    protected ConcurrentQueue<ILongCommand> queue_for_long = new ConcurrentQueue<ILongCommand>(); 
+
+    public bool HasCommand(){
+        return !queue.IsEmpty;
+    }
+    public bool HasLongCommand(){
+        return !queue_for_long.IsEmpty;
+    }
+    public ICommand Select(){
+        ICommand command; queue.TryDequeue(out command);
+        return command;
+    }
+    public void Add(ICommand cmd){
+        if (cmd is ILongCommand long_command) { queue_for_long.Enqueue(long_command); }
+        else { queue.Enqueue(cmd); }
+    }
+    public ILongCommand RunLong(){
+        queue_for_long.TryDequeue(out ILongCommand command);
+        command.Execute();
+        return command;
+    }
+    public bool IsCommDone(){
+        queue_for_long.TryPeek(out ILongCommand command);
+        return command.IsDone();
+    }
+}
+
+#!csharp
+
+class ServerThread
+{
+    protected ConcurrentQueue<ICommand> cqueue = new ConcurrentQueue<ICommand>();
+    protected Thread server_thread; volatile bool not_stopped_hard = true, not_stopped_soft = true, not_stopped_exactly = true;
+    private Scheduler scheduler = new Scheduler();public Thread name_of_thread = Thread.CurrentThread;
+
+    public void Add_New_Commands(ICommand command){
+        scheduler.Add(command);
+    }
+    public void Add_New_Thread(ICommand some_thread){
+        cqueue.Enqueue(some_thread);
+    }
+    public int Get_Server_Thread(){
+        return name_of_thread.GetHashCode();
+    }
+    public void Demand_Hard(){
+        not_stopped_hard = false;
+    }
+    public void Demand_Stop(){
+        not_stopped_exactly = false;
+    }
+    public void Demand_Soft(){
+        not_stopped_soft = false;
+    }
+    public void Run_Thread(){
+
+        while (not_stopped_exactly && not_stopped_hard)
+        {
+            if (scheduler.HasCommand() || scheduler.HasLongCommand()) {
+                if (scheduler.HasLongCommand()) {
+                    Console.WriteLine("not simple");
+                    ILongCommand comm = scheduler.RunLong(); 
+                    if (!comm.IsDone()) { Add_New_Commands(comm);}}
+                else
+                { Thread.Sleep(1000);var now_command = scheduler.Select();         
+                Console.WriteLine("simple comm");
+                    now_command.Execute();}
+                
+            }
+            else {not_stopped_exactly = false;}
+            if (!not_stopped_soft && !scheduler.HasCommand() && !scheduler.HasLongCommand() ) {Console.WriteLine("stop softly"); return;}
+        }Console.WriteLine("thread stop hardly or exactly");
+    }
+    public void Start_Thread(){
+        this.server_thread.Start();
+    }
+    public void Stop_Thread(){
+        this.server_thread.Join(); Demand_Stop();
+    }
+    public ConcurrentQueue<ICommand> Get_Queue(){
+        return cqueue;
+    }
+}
+
+#!csharp
+
+class ExceptionHandler{
+    public static void Ex_Handler(string command, Exception exception){
+        throw new Exception(exception.Message + " from " + command);
+    }
+}
+
+#!csharp
+
+class HardStop: ICommand
+{
+    protected ServerThread s_thread;
+    public HardStop(ServerThread thread){
+        this.s_thread = thread;
+    }
+    public void Execute(){
+        int current_t = Thread.CurrentThread.GetHashCode();
+        if (Thread.CurrentThread.GetHashCode() == s_thread.Get_Server_Thread()) {ExceptionHandler.Ex_Handler("HardStop", new InvalidOperationException("Non-server thread"));}
+        s_thread.Demand_Hard();
+    }
+}
+
+#!csharp
+
+class SoftStop: ICommand 
+{
+    protected ServerThread s_thread;
+    public SoftStop(ServerThread thread){
+        this.s_thread = thread;
+    }
+    public void Execute(){
+        var current_t = Thread.CurrentThread.GetHashCode();
+        if (Thread.CurrentThread.GetHashCode() == s_thread.Get_Server_Thread()) {ExceptionHandler.Ex_Handler("SoftStop", new InvalidOperationException("Non-server thread"));}
+        s_thread.Demand_Soft();
+    }
+}
+
+#!csharp
+
+ServerThread program = new ServerThread();
+program.Add_New_Commands(new TestCommand(1));
+program.Add_New_Commands(new TestCommand(2));
+program.Add_New_Commands(new TestCommand(3));
+program.Add_New_Commands(new TestCommand(4));
+program.Add_New_Commands(new TestCommand(5));
+
+program.Add_New_Commands(new HardStop(program));
+Thread myThread = new Thread(program.Run_Thread);
+myThread.Start();
