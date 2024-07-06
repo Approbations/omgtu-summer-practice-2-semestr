@@ -24,7 +24,7 @@
 Возможный вариант реализации - оставить одну потоко-безопасную очередь для потока, а для Команд использовать обычные очереди. Осталось только решить, как сообщение
 излеченное из очереди потока попадет в очередь Команды. Один из возможных вариантов:
 1. Каждая команда имеет уникальный идентификатор.
-2. Сообщение содержит уникальный идентификатор Команлды, которому оно адресовано.
+2. Сообщение содержит уникальный идентификатор Команды, которому оно адресовано.
 3. Для потока создаем специальную Длительную Команду, которая назвается Роутером. Он хранит коллекцию пар (id Команды, ссылка на очередь Команды). При вызове метода Execute этой 
 Роутера, если очередь потока не пуста, происходит чтение очередного сообщения и по id Команды определяется очередь, куда это сообщение записывается.
 Если id Команды не определен, на консоль выводится сообщение о невозможности доставить сообщение неизвестному адресату.
@@ -36,3 +36,284 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+using System.Threading;
+using System.Collections.Concurrent;
+
+#!csharp
+
+interface ICommand
+{
+    void Execute();
+}
+interface ILongCommand: ICommand{
+    bool IsDone();
+}
+public class TestCommand(int id) : ILongCommand
+{
+    int counter = 0;
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+    }
+
+    public bool IsDone(){
+        return counter == 3 ? true : false;
+    }
+    public int GetId(){
+        return id;
+    }
+    /*public void LExecute(Queue<Link> cqueue){
+        while (cqueue.Count > 0)
+            {
+                Link message;
+                cqueue.TryDequeue(out message);
+                Console.WriteLine($"Command {id} handle {message.Message}");
+            }
+        
+        Console.WriteLine("long command remain: " + remain_use);
+        this.remain_use--;
+        Done = this.remain_use == 0 ? true : false;
+    }*/
+}
+
+#!csharp
+
+class ExceptionHandler{
+    public static void Ex_Handler(string command, Exception exception){
+        throw new Exception(exception.Message + " from " + command);
+    }
+}
+
+#!csharp
+
+class Link{
+    public int Id { get; } public string Message { get; }
+
+    public Link(int id, string mess)
+    {
+        Id = id; Message = mess;
+    }
+}
+
+#!csharp
+
+interface IScheduler
+{
+    bool HasCommand();
+    ICommand Select();
+    void Add(ICommand cmd);
+}
+
+#!csharp
+
+class LongCommand: ILongCommand
+{
+    public int id; protected ConcurrentQueue<Link> cqueue = new ConcurrentQueue<Link>(); 
+    public bool Done = false;
+    public LongCommand(int id){
+        this.id = id;
+    }
+    public void EnqueueMessage(Link message)
+    {
+        cqueue.Enqueue(message);
+    }
+    //public void Execute(){}
+    public void Execute(){
+        while (cqueue.Count > 0)
+            {
+                Link message;
+                cqueue.TryDequeue(out message);
+                Console.WriteLine($"Command {id} handle {message.Message}");
+            }
+        
+        /*Console.WriteLine("long command remain: " + remain_use);
+        this.remain_use--;
+        Done = this.remain_use == 0 ? true : false;*/
+    }
+    public bool IsDone(){
+        return Done;
+    }
+    public int GetId(){
+        return this.id;
+    }
+}
+
+#!csharp
+
+class Scheduler: IScheduler
+{
+    protected ConcurrentQueue<ICommand> queue = new ConcurrentQueue<ICommand>(); 
+    protected ConcurrentQueue<ILongCommand> queue_for_long = new ConcurrentQueue<ILongCommand>(); 
+
+    public bool HasCommand(){
+        return !queue.IsEmpty;
+    }
+    public bool HasLongCommand(){
+        return !queue_for_long.IsEmpty;
+    }
+    public ICommand Select(){
+        ICommand command; queue.TryDequeue(out command);
+        return command;
+    }
+    public void Add(ICommand cmd){
+        if (cmd is ILongCommand long_command) { queue_for_long.Enqueue(long_command); }
+        else { queue.Enqueue(cmd); }
+    }
+    public ILongCommand RunLong(){
+        queue_for_long.TryDequeue(out ILongCommand command);
+        command.Execute();
+        return command;
+    }
+    public bool IsCommDone(){
+        queue_for_long.TryPeek(out ILongCommand command);
+        return command.IsDone();
+    }
+    public List<ILongCommand> GetLongCommands(){
+        return queue_for_long.ToList<ILongCommand>();
+    }
+}
+
+#!csharp
+
+class Router: ILongCommand
+{
+    public Queue<Link> rqueue; int id;
+    private Dictionary<int, TestCommand> dict = new Dictionary<int, TestCommand>();
+    public Router(Queue<Link> queue){
+        rqueue = queue;
+    }
+    public void Execute(){
+        if (rqueue.Count() > 0) {
+            rqueue.TryDequeue(out Link link);
+            if (!dict.ContainsKey(link.Id)) {ExceptionHandler.Ex_Handler("Router", new InvalidOperationException("unknown id"));}
+            else {dict.TryGetValue(link.Id, out var command); Console.WriteLine(link.Id + " " + link.Message); dict.Remove(link.Id);}
+        }
+    }
+    public bool IsDone(){
+        return false;
+    }
+    public void Add(TestCommand link){
+        dict[link.GetId()] = link;
+    }
+    public void EnqueueMessage(Link link){
+        rqueue.Enqueue(link);
+    }
+}
+
+#!csharp
+
+class ServerThread
+{
+    protected ConcurrentQueue<ICommand> cqueue = new ConcurrentQueue<ICommand>();
+    protected Thread server_thread; volatile bool not_stopped_hard = true, not_stopped_soft = true, not_stopped_exactly = true;
+    private Scheduler scheduler = new Scheduler();public Thread name_of_thread = Thread.CurrentThread;
+    public Router router;
+    public ServerThread(Queue<Link> queue){
+        router = new Router(queue);
+    }
+    public bool GetCommSch(){
+        try{return scheduler.HasCommand();}
+        catch (Exception) {return false;}
+    }
+    public void Add_New_Commands(ICommand command){
+        scheduler.Add(command);
+    }
+    public void Add_New_Commands(ILongCommand command){
+        scheduler.Add(command);
+        if (command is TestCommand testlong){ router.Add(testlong);}
+    }
+    public void Add_New_Thread(ICommand some_thread){
+        cqueue.Enqueue(some_thread);
+    }
+    public int Get_Server_Thread(){
+        return name_of_thread.GetHashCode();
+    }
+    public void Demand_Hard(){
+        not_stopped_hard = false;
+    }
+    public void Demand_Stop(){
+        not_stopped_exactly = false;
+    }
+    public void Demand_Soft(){
+        not_stopped_soft = false;
+    }
+    public void Run_Thread(){
+
+        while (not_stopped_exactly && not_stopped_hard)
+        {
+            if (scheduler.HasCommand() || scheduler.HasLongCommand()) {
+                if (scheduler.HasLongCommand()) {
+                    ILongCommand comm = scheduler.RunLong(); 
+                    if (!comm.IsDone()) { Add_New_Commands(comm);}}
+                else
+                { Thread.Sleep(1000);var now_command = scheduler.Select();         
+                    now_command.Execute();}
+                
+            }
+            else {not_stopped_exactly = false;}
+            if (!not_stopped_soft && !scheduler.HasCommand() && !scheduler.HasLongCommand() ) {return;}
+        }Console.WriteLine("thread stop hardly or exactly");
+    }
+    public void Start_Thread(){
+        this.server_thread.Start();
+    }
+    public void Stop_Thread(){
+        this.server_thread.Join(); Demand_Stop();
+    }
+    public ConcurrentQueue<ICommand> Get_Queue(){
+        return cqueue;
+    }
+    public void R_Execute(){
+        router.Execute();
+    }
+}
+
+#!csharp
+
+class HardStop: ICommand
+{
+    protected ServerThread s_thread;
+    public HardStop(ServerThread thread){
+        this.s_thread = thread;
+    }
+    public void Execute(){
+        int current_t = Thread.CurrentThread.GetHashCode();
+        if (Thread.CurrentThread.GetHashCode() == s_thread.Get_Server_Thread()) {ExceptionHandler.Ex_Handler("HardStop", new InvalidOperationException("Non-server thread"));}
+        s_thread.Demand_Hard();
+    }
+}
+
+#!csharp
+
+class SoftStop: ICommand 
+{
+    protected ServerThread s_thread;
+    public SoftStop(ServerThread thread){
+        this.s_thread = thread;
+    }
+    public void Execute(){
+        var current_t = Thread.CurrentThread.GetHashCode();
+        if (Thread.CurrentThread.GetHashCode() == s_thread.Get_Server_Thread()) {ExceptionHandler.Ex_Handler("SoftStop", new InvalidOperationException("Non-server thread"));}
+        s_thread.Demand_Soft();
+    }
+}
+
+#!csharp
+
+Queue<Link> feature_router = new Queue<Link>();
+
+var comm = new LongCommand(1);
+feature_router.Enqueue(new Link(1, "message 1"));
+feature_router.Enqueue(new Link(2, "message 2"));
+ServerThread program = new ServerThread(feature_router); 
+TestCommand test1 = new TestCommand(1);
+program.Add_New_Commands(test1);
+Thread thread = new Thread(program.Run_Thread);
+thread.Start();
+program.Add_New_Commands(new TestCommand(3));
+program.Add_New_Commands(new SoftStop(program));
+program.R_Execute();
